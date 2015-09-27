@@ -9,5 +9,5 @@ echoserver: ../stream_io.c main.c
 client: ../stream_io.c main2.c
 	$(CC) $(CFLAGS) $^ -o $@
 
-clean: echoserver client
-	rm $^
+clean:
+	rm -f echoserver client

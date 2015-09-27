@@ -10,3 +10,8 @@ make_library: stream_io.c stream_io.h
 
 make_backdoor:
 	$(MAKE) -Cbackdoor
+
+clean:
+	$(MAKE) -Cbackdoor clean
+	$(MAKE) -Cecho clean
+	rm -f libstream_io.a stream_io.o
