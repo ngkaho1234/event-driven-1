@@ -17,10 +17,11 @@
 #include <stdlib.h>
 
 struct channel_ctx {
+	int pid;
+	void *buffer;
 	struct stream from;
 	struct stream *to;
 	struct stream_request req;
-	int pid;
 };
 
 static struct stream_loop g_loop;
@@ -39,7 +40,8 @@ static void after_close(struct stream *s)
 		printf("Killing pid: %u\n", cctx->pid);
 		waitid(P_PID, cctx->pid, &info, WEXITED);
 	}
-	free(s);
+	free(cctx->buffer);
+	free(cctx);
 	printf("Resources are freed.\n");
 }
 
@@ -51,7 +53,6 @@ static void after_write(struct stream_request *req)
 	cctx = container_of(req, struct channel_ctx, req);
 
 	if (req->result.errcode || req->result.len == 0) {
-		free(req->buffer.buf);
 		close(cctx->from.fd);
 		close(cctx->to->fd);
 		stream_deactivate(req->stream->loop, &cctx->from);
@@ -71,7 +72,6 @@ static void after_read(struct stream_request *req)
 	cctx = container_of(req, struct channel_ctx, req);
 
 	if (req->result.errcode || req->result.len == 0) {
-		free(req->buffer.buf);
 		close(cctx->from.fd);
 		close(cctx->to->fd);
 		stream_deactivate(req->stream->loop, &cctx->from);
@@ -144,13 +144,13 @@ static void acceptor(struct stream_request *req)
 
 	client_side->req.stream = &client_side->from;
 	client_side->req.request = REQ_READ;
-	client_side->req.buffer.buf = malloc(BUFFER_LEN);
+	client_side->req.buffer.buf = client_side->buffer = malloc(BUFFER_LEN);
 	client_side->req.buffer.len = BUFFER_LEN;
 	client_side->req.callback = after_read;
 
 	server_side->req.stream = &server_side->from;
 	server_side->req.request = REQ_READ;
-	server_side->req.buffer.buf = malloc(BUFFER_LEN);
+	server_side->req.buffer.buf = server_side->buffer = malloc(BUFFER_LEN);
 	server_side->req.buffer.len = BUFFER_LEN;
 	server_side->req.callback = after_read;
 

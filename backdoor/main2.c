@@ -18,6 +18,7 @@
 #include <stdlib.h>
 
 struct channel_ctx {
+	void *buffer;
 	struct stream from;
 	struct stream *to;
 	struct stream_request req;
@@ -31,7 +32,8 @@ static struct sockaddr_in accept_content = {0};
 
 static void after_close(struct stream *s)
 {
-	free(s);
+	struct channel_ctx *cctx = container_of(s, struct channel_ctx, from);
+	free(cctx);
 	exit(0);
 }
 
