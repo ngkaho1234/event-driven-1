@@ -30,23 +30,6 @@ static void bell_notifier(EV_P_ ev_io *w, int revents)
 	eventfd_read(w->fd, &count);
 }
 
-static void prepare_notifier(EV_P_ ev_prepare *w, int revents)
-{
-	struct stream *s;
-	struct stream_loop *l = container_of(w, struct stream_loop, prepare_watcher);
-	while (!event_list_empty(&l->close_queue)) {
-		s = event_list_first_entry(&l->close_queue, struct stream, node);
-		event_list_del(&s->node);
-		if (s->events & EV_CLOSE) {
-			if (s->close_callback) {
-				s->events |= EV_IN_CB;
-				s->close_callback(s);
-			}
-			return;
-		}
-	}
-}
-
 static inline int __stream_loop_init_bell(struct stream_loop *loop)
 {
 	loop->bell = eventfd(0, EFD_NONBLOCK);
@@ -77,9 +60,6 @@ int stream_loop_init(struct stream_loop *loop, int connections)
 		ev_loop_destroy(el);
 		goto oops;
 	}
-
-	ev_prepare_init(&loop->prepare_watcher, prepare_notifier);
-	ev_prepare_start(el, &loop->prepare_watcher);
 
 	return 0;
 oops:
@@ -132,39 +112,50 @@ int stream_deactivate(struct stream_loop *loop, struct stream *s)
 	s->events |= EV_CLOSE;
 	ev_clear_pending(el, &ei[READ_WATCHER]);
 	ev_clear_pending(el, &ei[WRITE_WATCHER]);
-	if (event_list_empty(&s->node))
-		event_list_add(&s->node, &loop->close_queue);
+	if (!(s->events & EV_IN_CB))
+		s->close_callback(s);
+
 	return 0;
 }
 
 static void __process_read_request(struct stream_loop *loop, struct stream *s);
 static void __process_write_request(struct stream_loop *loop, struct stream *s);
 
-static void __process_read_callback(struct stream_loop *loop, struct stream *s);
-static void __process_write_callback(struct stream_loop *loop, struct stream *s);
+static void __process_read_callback(struct stream_loop *loop, struct stream *s,
+				    int *s_closed);
+static void __process_write_callback(struct stream_loop *loop, struct stream *s,
+				    int *s_closed);
 
 static void libev_read_cb(EV_P_ ev_io *w, int revents)
 {
+	int s_closed;
 	struct stream *s = container_of(w, struct stream, stream_watcher[READ_WATCHER]);
 	/*
 	 * XXX: actually setting the EV_READ bit is non-necessary.
 	 */
 	s->events |= (EV_READ | EV_IN_CB);
 	__process_read_request(s->loop, s);
-	__process_read_callback(s->loop, s);
+	__process_read_callback(s->loop, s, &s_closed);
 	s->events &= ~(EV_READ | EV_IN_CB);
+	if (s_closed && s->close_callback)
+		s->close_callback(s);
+
 }
 
 static void libev_write_cb(EV_P_ ev_io *w, int revents)
 {
+	int s_closed;
 	struct stream *s = container_of(w, struct stream, stream_watcher[WRITE_WATCHER]);
 	/*
 	 * XXX: actually setting the EV_WRITE bit is non-necessary.
 	 */
 	s->events |= (EV_WRITE | EV_IN_CB);
 	__process_write_request(s->loop, s);
-	__process_write_callback(s->loop, s);
+	__process_write_callback(s->loop, s, &s_closed);
 	s->events &= ~(EV_WRITE | EV_IN_CB);
+	if (s_closed && s->close_callback)
+		s->close_callback(s);
+
 }
 
 int stream_init(struct stream *s, int fd)
@@ -172,7 +163,6 @@ int stream_init(struct stream *s, int fd)
 	s->fd = fd;
 	s->events = 0;
 	__stream_init_io_queue(s);
-	INIT_LIST_HEAD(&s->node);
 
 	ev_io_init(&s->stream_watcher[READ_WATCHER], &libev_read_cb, fd, EV_READ);
 	ev_io_init(&s->stream_watcher[WRITE_WATCHER], &libev_write_cb, fd, EV_WRITE);
@@ -180,7 +170,7 @@ int stream_init(struct stream *s, int fd)
 	return 0;
 }
 
-int stream_feed(struct stream *s, int events)
+static int stream_feed(struct stream *s, int events)
 {
 	struct ev_loop *el;
 	if (s->loop == NULL) {
@@ -229,7 +219,6 @@ static inline int __do_write(struct stream_loop *loop, struct stream *s, struct 
 	req->result.errcode = 0;
 	req->result.newsocket = 0;
 	s->errcode = 0;
-done:
 	return 0;
 out:
 	if (errno && errno != EAGAIN && errno != EINTR) {
@@ -259,7 +248,6 @@ static inline int __do_read(struct stream_loop *loop, struct stream *s, struct s
 	}
 	req->result.newsocket = 0;
 	s->errcode = 0;
-done:
 	return 0;
 out:
 	if (errno && errno != EAGAIN && errno != EINTR) {
@@ -287,7 +275,6 @@ static inline int __do_accept(struct stream_loop *loop, struct stream *s, struct
 	}
 	req->result.newsocket = sock;
 	s->errcode = 0;
-done:
 	return 0;
 out:
 	if (errno && errno != EAGAIN && errno != EINTR) {
@@ -300,9 +287,12 @@ out:
 	return -errno;
 }
 
-static void __process_read_callback(struct stream_loop *loop, struct stream *s)
+static void __process_read_callback(struct stream_loop *loop, struct stream *s,
+				    int *s_closed)
 {
 	struct stream_request *req;
+
+	*s_closed = 0;
 	while (!event_list_empty(&s->read_queue[IO_FIN])) {
 		req = event_list_first_entry(&s->read_queue[IO_FIN], struct stream_request, node);
 		event_list_del(&req->node);
@@ -310,17 +300,23 @@ static void __process_read_callback(struct stream_loop *loop, struct stream *s)
 		if (s->errcode && s->errcode != EAGAIN && s->errcode != EINTR)
 			break;
 		if (s->events & EV_CLOSE)
-			break;
+			goto closed;
 	}
 
 	if (event_list_empty(&s->read_queue[IO_WAIT])) {
 		stream_try_io_stop_read(loop, s);
 	}
+	return;
+closed:
+	*s_closed = 1;
 }
 
-static void __process_write_callback(struct stream_loop *loop, struct stream *s)
+static void __process_write_callback(struct stream_loop *loop, struct stream *s,
+				     int *s_closed)
 {
 	struct stream_request *req;
+
+	*s_closed = 0;
 	while (!event_list_empty(&s->write_queue[IO_FIN])) {
 		req = event_list_first_entry(&s->write_queue[IO_FIN], struct stream_request, node);
 		event_list_del(&req->node);
@@ -328,12 +324,15 @@ static void __process_write_callback(struct stream_loop *loop, struct stream *s)
 		if (s->errcode && s->errcode != EAGAIN && s->errcode != EINTR)
 			break;
 		if (s->events & EV_CLOSE)
-			break;
+			goto closed;
 	}
 
 	if (event_list_empty(&s->write_queue[IO_WAIT])) {
 		stream_try_io_stop_write(loop, s);
 	}
+	return;
+closed:
+	*s_closed = 1;
 }
 
 static void __process_read_request(struct stream_loop *loop, struct stream *s)

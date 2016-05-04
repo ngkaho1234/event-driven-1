@@ -91,7 +91,6 @@ void stream_loop_destroy(struct stream_loop *loop);
 int stream_activate(struct stream_loop *loop, struct stream *s);
 int stream_deactivate(struct stream_loop *loop, struct stream *s);
 int stream_init(struct stream *s, int fd);
-int stream_feed(struct stream *s, int events);
 int stream_init_request(struct stream_request *req);
 void stream_io_submit(struct stream_request *req);
 int stream_loop_start(struct stream_loop *loop, int once);
