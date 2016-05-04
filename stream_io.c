@@ -181,7 +181,7 @@ static int stream_feed(struct stream *s, int events)
 	/*
 	 * TODO: possible for multi-loop.
 	 */
-#if 1
+#if 0
 	ev_async_send(el, &s->loop->bell_watcher);
 #endif
 
@@ -197,17 +197,17 @@ static int __move_to_queue(struct stream_request *req, struct event_list *dest)
 static inline int __do_write(struct stream *s, struct stream_request *req)
 {
 	int nbyte;
-	char *buf = req->private.buf;
-	while (req->private.len) {
-		nbyte = write(s->fd, buf, req->private.len);
+	char *buf = req->__private.buf;
+	while (req->__private.len) {
+		nbyte = write(s->fd, buf, req->__private.len);
 		if (nbyte < 0)
 			goto out;
 
 		buf += nbyte;
-		req->private.len -= nbyte;
-		req->private.buf = buf;
+		req->__private.len -= nbyte;
+		req->__private.buf = buf;
 	}
-	req->result.len = req->buffer.len - req->private.len;
+	req->result.len = req->buffer.len - req->__private.len;
 	req->result.stats = STAT_NONE;
 	req->result.errcode = 0;
 	req->result.newsocket = 0;
@@ -293,15 +293,14 @@ static void __process_read_callback(struct stream_loop *loop, struct stream *s,
 		if (s->errcode && s->errcode != EAGAIN && s->errcode != EINTR)
 			break;
 		if (s->events & EV_CLOSE)
-			goto closed;
+			break;
 	}
 
-	if (event_list_empty(&s->read_queue[IO_WAIT])) {
+	if (event_list_empty(&s->read_queue[IO_WAIT]))
 		stream_try_io_stop_read(loop, s);
-	}
-	return;
-closed:
-	*s_closed = 1;
+
+	if (s->events & EV_CLOSE)
+		*s_closed = 1;
 }
 
 static void __process_write_callback(struct stream_loop *loop, struct stream *s,
@@ -317,15 +316,14 @@ static void __process_write_callback(struct stream_loop *loop, struct stream *s,
 		if (s->errcode && s->errcode != EAGAIN && s->errcode != EINTR)
 			break;
 		if (s->events & EV_CLOSE)
-			goto closed;
+			break;
 	}
 
-	if (event_list_empty(&s->write_queue[IO_WAIT])) {
+	if (event_list_empty(&s->write_queue[IO_WAIT]))
 		stream_try_io_stop_write(loop, s);
-	}
-	return;
-closed:
-	*s_closed = 1;
+
+	if (s->events & EV_CLOSE)
+		*s_closed = 1;
 }
 
 static void __process_read_request(struct stream *s)
@@ -401,8 +399,8 @@ void stream_io_submit(struct stream_request *req)
 	struct stream_loop *loop = s->loop;
 	struct event_list *list;
 	int events;
-	req->private.buf = req->buffer.buf;
-	req->private.len = req->buffer.len;
+	req->__private.buf = req->buffer.buf;
+	req->__private.len = req->buffer.len;
 
 	if (req->request == REQ_READ) {
 		list = &s->read_queue[IO_WAIT];

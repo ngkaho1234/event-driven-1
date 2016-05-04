@@ -44,7 +44,7 @@ struct stream_request {
 	request_cb_t callback;
 
 	struct event_list node;
-	struct stream_buffer private;
+	struct stream_buffer __private;
 };
 
 struct stream_loop;
