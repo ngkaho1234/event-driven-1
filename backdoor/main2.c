@@ -60,7 +60,7 @@ static void after_read(struct stream_request *req)
 	struct channel_ctx *cctx;
 	cctx = container_of(req, struct channel_ctx, req);
 
-	if (req->result.len == 0) {
+	if (req->result.errcode || req->result.len == 0) {
 		free(req->buffer.buf);
 		stream_deactivate(req->stream->loop, &cctx->from);
 		close(cctx->from.fd);

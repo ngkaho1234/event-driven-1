@@ -1,14 +1,13 @@
 #include <stream_io.h>
 
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
-
-#include "stream_io.h"
 
 #include <malloc.h>
 #include <string.h>
@@ -21,6 +20,7 @@ struct channel_ctx {
 	struct stream from;
 	struct stream *to;
 	struct stream_request req;
+	int pid;
 };
 
 static struct stream_loop g_loop;
@@ -32,8 +32,15 @@ static struct sockaddr_in accept_content = {0};
 
 static void after_close(struct stream *s)
 {
-	printf("Resources are freed.\n");
+	struct channel_ctx *cctx = container_of(s, struct channel_ctx, from);
+
+	if (cctx->pid) {
+		siginfo_t info;
+		printf("Killing pid: %u\n", cctx->pid);
+		waitid(P_PID, cctx->pid, &info, WEXITED);
+	}
 	free(s);
+	printf("Resources are freed.\n");
 }
 
 static void after_read(struct stream_request *req);
@@ -45,10 +52,10 @@ static void after_write(struct stream_request *req)
 
 	if (req->result.errcode || req->result.len == 0) {
 		free(req->buffer.buf);
-		stream_deactivate(req->stream->loop, &cctx->from);
-		stream_deactivate(req->stream->loop, cctx->to);
 		close(cctx->from.fd);
 		close(cctx->to->fd);
+		stream_deactivate(req->stream->loop, &cctx->from);
+		stream_deactivate(req->stream->loop, cctx->to);
 		return;
 	}
 	req->stream = &cctx->from;
@@ -63,12 +70,12 @@ static void after_read(struct stream_request *req)
 	struct channel_ctx *cctx;
 	cctx = container_of(req, struct channel_ctx, req);
 
-	if (req->result.len == 0) {
+	if (req->result.errcode || req->result.len == 0) {
 		free(req->buffer.buf);
-		stream_deactivate(req->stream->loop, &cctx->from);
-		stream_deactivate(req->stream->loop, cctx->to);
 		close(cctx->from.fd);
 		close(cctx->to->fd);
+		stream_deactivate(req->stream->loop, &cctx->from);
+		stream_deactivate(req->stream->loop, cctx->to);
 		return;
 	}
 	req->stream = cctx->to;
@@ -123,6 +130,9 @@ static void acceptor(struct stream_request *req)
 	client_side->from.close_callback = after_close;
 	server_side->from.close_callback = after_close;
 
+	client_side->pid = 0;
+	server_side->pid = 0;
+
 	client_side->to = &server_side->from;
 	server_side->to = &client_side->from;
 
@@ -162,10 +172,10 @@ static void acceptor(struct stream_request *req)
 		setsid();
 		execl(exec_path, exec_path, "-i", NULL);
 	}
+	server_side->pid = pid;
 
 	close(tunnel[1]);
 
-	/*stream_io_submit(newreq);*/
 	stream_io_submit(req);
 	stream_io_submit(&client_side->req);
 	stream_io_submit(&server_side->req);
