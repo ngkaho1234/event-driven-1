@@ -76,11 +76,9 @@ struct stream_locker {
 };
 
 struct stream_loop {
-	int bell;
 	int breaking;
 	int connections;
-	ev_io bell_watcher;
-	ev_prepare prepare_watcher;
+	ev_async bell_watcher;
 	struct event_list close_queue;
 
 	struct ev_loop *stream_loop;
